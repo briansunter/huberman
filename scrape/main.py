@@ -1,15 +1,20 @@
 import os
+import markdown
+from fpdf import FPDF, HTMLMixin
+import html
+from fpdf import FPDF
 import requests
 from bs4 import BeautifulSoup
 import sys
 from urllib.parse import urljoin
-import anthropic
+from openai import OpenAI
+import concurrent.futures
 
-api_key = os.getenv("CLAUDE_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
 
-client = anthropic.Anthropic(
-    api_key=api_key,
-)
+client = OpenAI(api_key=api_key)
+
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
 }
@@ -51,21 +56,23 @@ def convert_transcript_to_essay(transcript):
         "4. Rewrite each section of the transcript in formal, grammatical essay prose. Don't simply copy sentences from the transcript - reformulate the language to be more precise and concise while preserving the meaning. Use full sentences and paragraphs.\n\n"
         "5. Apply markdown formatting to structure the essay. Use headers to delineate major sections, paragraphs to separate ideas, and lists where appropriate. Aim to enhance the readability and visual clarity of the essay.\n\n"
         "6. Carefully review your rewritten markdown essay. Compare it side-by-side to the original transcript. Check that you did not omit any important details or change the meaning of anything that was said. Revise as needed.\n\n"
+        "7. Remove any advertisements or promotional content that may be present in the transcript.\n\n"
+        "8. Remove intro and outro from podcast such as 'Welcome to the podcast' or 'Thanks for joining us' and other outro such as asking to subscribe.\n\n"
         "After you have finished rewriting the transcript as a markdown essay, provide your rewritten version inside <rewritten_essay> tags.\n\n"
         "Remember, the key priorities are to retain all the details from the original transcript, while organizing and expressing the content more formally and clearly in proper essay format with markdown styling. Do not leave out anything substantive from the transcript."
     )
 
-    # Send the message to Claude
-    response = client.messages.create(
-        model="claude-3-opus-20240229",
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": message_content}],
         max_tokens=4000,
         temperature=0,
-        messages=[{"role": "user", "content": message_content}],
     )
 
     try:
         essay = (
-            response.content.split("<rewritten_essay>")[1]
+            response.choices[0]
+            .message.content.split("<rewritten_essay>")[1]
             .split("</rewritten_essay>")[0]
             .strip()
         )
@@ -76,37 +83,40 @@ def convert_transcript_to_essay(transcript):
     return essay
 
 
-def generate_essays_from_transcripts(transcript_folder, essay_folder):
-    # Create the essay folder if it doesn't exist
-    if not os.path.exists(essay_folder):
-        os.makedirs(essay_folder)
+def process_transcript(filename, transcript_folder, essay_folder):
+    if filename.endswith(".txt"):
+        with open(
+            os.path.join(transcript_folder, filename), "r", encoding="utf-8"
+        ) as file:
+            transcript = file.read()
 
-    # Iterate over each file in the transcript folder
-    for filename in os.listdir(transcript_folder):
-        if filename.endswith(".txt"):
-            # Read the transcript file
-            with open(
-                os.path.join(transcript_folder, filename), "r", encoding="utf-8"
-            ) as file:
-                transcript = file.read()
-
-            # Convert the transcript into an essay
-            essay = convert_transcript_to_essay(transcript)
-
-            # Generate the essay filename
+        essay = convert_transcript_to_essay(transcript)
+        if essay:
             essay_filename = f"essay_{os.path.splitext(filename)[0]}.md"
-
-            # Save the essay as a new file
             with open(
                 os.path.join(essay_folder, essay_filename), "w", encoding="utf-8"
             ) as file:
                 file.write(essay)
-
             print(f"Essay saved: {essay_filename}")
 
 
+def generate_essays_from_transcripts(transcript_folder, essay_folder):
+    if not os.path.exists(essay_folder):
+        os.makedirs(essay_folder)
+
+    filenames = os.listdir(transcript_folder)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(
+                process_transcript, filename, transcript_folder, essay_folder
+            )
+            for filename in filenames
+        ]
+        concurrent.futures.wait(futures)
+
+
 def main2():
-    # Generate essays from transcripts
     transcript_folder = "transcripts"
     essay_folder = "essays"
     generate_essays_from_transcripts(transcript_folder, essay_folder)
@@ -116,7 +126,6 @@ def main():
     url = sys.argv[1]
     links = get_all_links(url)
 
-    # Create transcripts directory if it doesn't exist
     if not os.path.exists("transcripts"):
         os.makedirs("transcripts")
 
@@ -128,7 +137,6 @@ def main():
             save_text_to_file(text, filename)
             print(f"Saved text from {full_link} to {filename}")
 
-    # Generate essays from transcripts
     transcript_folder = "transcripts"
     essay_folder = "essays"
     generate_essays_from_transcripts(transcript_folder, essay_folder)
@@ -136,3 +144,58 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+from fpdf import (
+    FPDF,
+    HTMLMixin,
+)  # Ensure you have fpdf2 installed and imported correctly
+
+
+class PDF(FPDF, HTMLMixin):
+    def chapter_title(self, title):
+        self.set_font("helvetica", style="B", size=12)
+        self.cell(0, 10, title, ln=True, align="L")
+        self.ln(10)
+
+    def chapter_body_html(self, html_content):
+        html_content = html_content.replace("—", "--")
+        html_content = html_content.replace("₂", "2")
+        # ’
+        html_content = html_content.replace("’", "'")
+        unescaped_html = html.unescape(html_content)  # Correctly unescape HTML entities
+        self.write_html(unescaped_html)  # Pass the unescaped HTML to write_html
+
+    def chapter_body(self, body):
+        body = body.replace("—", "--")
+        body = body.replace("—", "--")
+        self.set_font("helvetica", size=12)  # Use a built-in font
+        self.multi_cell(0, 10, body)
+        self.ln()
+
+
+def combine_essays_into_pdf(essay_folder, output_pdf):
+    pdf = PDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    for filename in sorted(os.listdir(essay_folder)):
+        if filename.endswith(".md"):
+            with open(
+                os.path.join(essay_folder, filename), "r", encoding="utf-8"
+            ) as file:
+                title = os.path.splitext(filename)[0]
+                markdown_text = file.read()
+                html_content = markdown.markdown(markdown_text)
+
+            pdf.add_page()
+            pdf.chapter_title(title)
+            print(f"Processing file: {filename}")
+            pdf.chapter_body_html(html_content)
+
+    pdf.output(output_pdf)
+    print(f"Combined PDF saved as {output_pdf}")
+
+
+def main3():
+    essay_folder = "essays"
+    output_pdf = "combined_essays.pdf"
+    combine_essays_into_pdf(essay_folder, output_pdf)
