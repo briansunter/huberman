@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "scrape"
+version = "0.1.0"
+description = ""
+authors = ["Brian Sunter <2816289+briansunter@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.scripts]
+run-main = "scrape.main:main"
+transcript= "scrape.main:main2"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+beautifulsoup4 = "^4.12.3"
+requests = "^2.32.1"
+anthropic = "^0.26.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
